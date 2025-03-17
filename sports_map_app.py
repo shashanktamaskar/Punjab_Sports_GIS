@@ -1,3 +1,4 @@
+
 import streamlit as st
 import pandas as pd
 import geopandas as gpd
@@ -11,32 +12,24 @@ from shapely.geometry import shape, MultiPolygon
 st.set_page_config(layout="wide")
 
 st.markdown(
-    """
+    '''
     <style>
-    /* Remove extra whitespace from the main container */
-    .css-18e3th9 {
-        padding-top: 0rem !important;
-        padding-bottom: 0rem !important;
-    }
-    .css-1outpf7 {
-        padding: 0rem !important;
-        margin: 0rem !important;
-    }
+    .css-18e3th9 { padding-top: 0rem !important; padding-bottom: 0rem !important; }
+    .css-1outpf7 { padding: 0rem !important; margin: 0rem !important; }
     </style>
-    """,
+    ''',
     unsafe_allow_html=True
 )
 
 # File paths
-nursery_file = "Information regarding nursery location_matched.xlsx"
+data_file = "Punjab_Sports_Constituency_Data.xlsx"
 shapefile_path = "Punjab_Legislative_Constituency.shp"
 
-# --- 1) Load Constituency Polygons from Shapefile ---
+# --- Load Constituency Polygons from Shapefile ---
 features = []
 with fiona.open(shapefile_path) as shapefile:
     for feature in shapefile:
         geom = shape(feature["geometry"])
-        # If geometry is MultiPolygon, pick the largest part
         if isinstance(geom, MultiPolygon):
             geom = max(geom.geoms, key=lambda g: g.area)
         centroid = geom.centroid
@@ -48,56 +41,45 @@ with fiona.open(shapefile_path) as shapefile:
         })
 gdf = gpd.GeoDataFrame(features, geometry="geometry")
 
-# --- 2) Load the New Excel File ---
-df = pd.read_excel(nursery_file)
+# --- Load and Process the New Excel File ---
+df = pd.read_excel(data_file)
 
-# Rename columns to simpler internal names
-df = df.rename(
-    columns={
-        "Name of District": "District",
-        "Name of Constituency": "Original_Constituency",
-        "Name of Place/ Nursery": "Nursery",
-        "Ownership (Dept. / School/ M.C./ Panchayat etc)": "Ownership",
-        "Area / Acre": "Area",
-        "Lat": "Latitude",
-        "Long": "Longitude",
-    }
-)
+# Rename columns to match app expectations
+df = df.rename(columns={
+    "Name of District": "District",
+    "Name of Constituency": "Original_Constituency",
+    "Name of Place": "Nursery",
+    "AC_Name": "Closest_Match"
+})
 
-# Select the columns needed for mapping and drop fully empty rows
-df = df[
-    [
-        "District",
-        "Original_Constituency",
-        "Closest_Match",
-        "Nursery",
-        "Ownership",
-        "Area",
-        "Game",
-        "Latitude",
-        "Longitude",
-    ]
-].dropna(how="all")
+# Add missing columns if not present
+if "Ownership (Dept. / School/ M.C./ Panchayat etc)" not in df.columns:
+    df["Ownership (Dept. / School/ M.C./ Panchayat etc)"] = "Unknown"
+if "Area / Acre" not in df.columns:
+    df["Area / Acre"] = 0
 
-# Convert Lat/Long to numeric and drop rows with missing coordinates
-df["Latitude"] = pd.to_numeric(df["Latitude"], errors="coerce")
-df["Longitude"] = pd.to_numeric(df["Longitude"], errors="coerce")
+# Rename those columns
+df = df.rename(columns={
+    "Ownership (Dept. / School/ M.C./ Panchayat etc)": "Ownership",
+    "Area / Acre": "Area"
+})
+
+# Ensure required columns exist
+df = df[["District", "Original_Constituency", "Closest_Match", "Nursery", "Ownership", "Area", "Game", "Lat", "Long"]]
+
+# Convert Lat/Long to numeric and drop invalid rows
+df["Latitude"] = pd.to_numeric(df["Lat"], errors="coerce")
+df["Longitude"] = pd.to_numeric(df["Long"], errors="coerce")
 df = df.dropna(subset=["Latitude", "Longitude"])
 
 # Punjab center fallback
 punjab_center = [30.9, 75.85]
 
-# --- 3) Define a Function to Create the Map ---
+# --- Function to Create Map ---
 def create_map(df_filtered, gdf_full):
-    """
-    Creates a Folium map using only the constituencies found in df_filtered['Closest_Match'].
-    If exactly one, zoom to it; if multiple, compute bounding box.
-    """
     unique_const = df_filtered["Closest_Match"].unique()
-    # Filter the GeoDataFrame by these corrected names
     gdf_filtered = gdf_full[gdf_full["AC_NAME"].isin(unique_const)].copy()
 
-    # If no matching polygons, just show full Punjab
     if len(gdf_filtered) == 0:
         m = folium.Map(location=punjab_center, zoom_start=8, width="100%", height="90vh")
         folium.TileLayer(
@@ -109,13 +91,12 @@ def create_map(df_filtered, gdf_full):
         ).add_to(m)
         return m
 
-    # Determine map center and zoom based on the number of constituencies
     if len(gdf_filtered) == 1:
         row = gdf_filtered.iloc[0]
         center = [row["centroid_y"], row["centroid_x"]]
         zoom = 12
     else:
-        bounds = gdf_filtered.total_bounds  # [minx, miny, maxx, maxy]
+        bounds = gdf_filtered.total_bounds
         center = [(bounds[1] + bounds[3]) / 2, (bounds[0] + bounds[2]) / 2]
         zoom = 8
 
@@ -128,7 +109,6 @@ def create_map(df_filtered, gdf_full):
         control=True
     ).add_to(m)
 
-    # Add polygon outlines for matching constituencies
     for _, row in gdf_filtered.iterrows():
         folium.GeoJson(
             row["geometry"],
@@ -141,7 +121,6 @@ def create_map(df_filtered, gdf_full):
             }
         ).add_to(m)
 
-    # If exactly one constituency, add a label
     if len(gdf_filtered) == 1:
         folium.Marker(
             location=[gdf_filtered.iloc[0]["centroid_y"], gdf_filtered.iloc[0]["centroid_x"]],
@@ -150,7 +129,6 @@ def create_map(df_filtered, gdf_full):
             )
         ).add_to(m)
 
-    # --- Sport-specific Icons ---
     sport_icons = {
         'Basketball': 'basketball-ball',
         'Volleyball': 'volleyball-ball',
@@ -159,7 +137,6 @@ def create_map(df_filtered, gdf_full):
         'Hockey': 'hockey-puck',
     }
 
-    # Add facility markers in a cluster with sport-specific icons
     marker_cluster = MarkerCluster().add_to(m)
     for _, row in df_filtered.iterrows():
         sport = row["Game"]
@@ -177,27 +154,22 @@ def create_map(df_filtered, gdf_full):
 
     return m
 
-# --- 4) Build the Streamlit UI ---
+# --- Build Streamlit UI ---
 st.sidebar.title("Constituency-wise Sports Facilities Map")
 st.sidebar.header("Filters")
 
-# Ensure 'Game' column values are strings and fill NaN with a placeholder
 df["Game"] = df["Game"].fillna("Unknown").astype(str)
-
-# Get a sorted list of sports and constituencies for the dropdowns
 all_sports = sorted(df["Game"].unique())
 all_constituencies = sorted(df["Closest_Match"].unique())
 
 selected_constituency = st.sidebar.selectbox("Select Constituency", ["All"] + all_constituencies)
 selected_sport = st.sidebar.selectbox("Select Sport", ["All"] + all_sports)
 
-# Filter the facility data based on sidebar selections
 df_filtered = df.copy()
 if selected_constituency != "All":
     df_filtered = df_filtered[df_filtered["Closest_Match"] == selected_constituency]
 if selected_sport != "All":
     df_filtered = df_filtered[df_filtered["Game"] == selected_sport]
 
-# Generate and display the map
 m = create_map(df_filtered, gdf)
 folium_static(m)
